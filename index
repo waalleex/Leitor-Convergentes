@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Check-in - Comunidade Conexão</title>
+  
+  <!-- Biblioteca Html5-QRCode otimizada -->
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #1F2A24;
+      color: #ffffff;
+      text-align: center;
+      padding: 15px;
+      margin: 0;
+    }
+    h2 { color: #C8A15A; margin-bottom: 5px; text-transform: uppercase; }
+    p { color: #DECAA5; font-size: 14px; }
+    
+    #reader {
+      width: 100%;
+      max-width: 400px;
+      margin: 15px auto;
+      background: #ffffff;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    
+    #resultado {
+      background: #ffffff;
+      color: #1F2A24;
+      max-width: 380px;
+      margin: 20px auto;
+      padding: 20px;
+      border-radius: 10px;
+      display: none;
+      text-align: left;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+    .alerta {
+      background: #FFF3CD;
+      color: #856404;
+      padding: 10px;
+      border-radius: 6px;
+      margin: 12px 0;
+      font-weight: bold;
+      border-left: 4px solid #FFEBAA;
+    }
+    .btn {
+      background: #34634B;
+      color: white;
+      border: none;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 6px;
+      width: 100%;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    .btn:active { background: #1F2A24; }
+    .status-loading { color: #C8A15A; font-weight: bold; display: none; margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+  <h2>Check-in Conexão</h2>
+  <p>Aproxime o QR Code do participante da câmera</p>
+  
+  <div id="reader"></div>
+  <div id="loading" class="status-loading">⏳ Buscando dados na planilha...</div>
+
+  <div id="resultado">
+    <h3 id="pNome" style="margin:0 0 10px 0; color:#1F2A24; border-bottom: 2px solid #C8A15A; padding-bottom: 5px;"></h3>
+    <p style="color:#1F2A24; margin: 5px 0;"><b>ID:</b> <span id="pId"></span></p>
+    <p style="color:#1F2A24; margin: 5px 0;"><b>Camiseta:</b> <span id="pCamiseta"></span></p>
+    
+    <div id="pRestricaoBox" class="alerta" style="display:none;">
+      ⚠️ <b>Restrição Alimentar:</b> <span id="pRestricao"></span>
+    </div>
+
+    <button id="btnConfirmar" class="btn" onclick="confirmarEntrada()">Confirmar Entrada</button>
+  </div>
+
+  <script>
+    // Cole aqui o URL do App da Web gerado na implantação do Apps Script
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbymAbRLeb-ZvDXYdYievSXErp3QZzPXXhQJeWU45mI1CvHAgnKraMoe2133eWVo_zE/exec"; 
+
+    let linhaAtual = null;
+    let lendo = true;
+
+    function onScanSuccess(decodedText) {
+      if (!lendo) return;
+      lendo = false; // Pausa novas leituras enquanto processa
+
+      document.getElementById("loading").style.display = "block";
+      
+      fetch(`${APPS_SCRIPT_URL}?acao=buscar&id=${encodeURIComponent(decodedText)}`)
+        .then(response => response.json())
+        .then(res => {
+          document.getElementById("loading").style.display = "none";
+          if (res.sucesso) {
+            exibirResultado(res);
+          } else {
+            alert(res.mensagem);
+            lendo = true; // Retoma leitura caso não ache
+          }
+        })
+        .catch(err => {
+          document.getElementById("loading").style.display = "none";
+          alert("Erro ao conectar à planilha. Verifique a conexão.");
+          lendo = true;
+        });
+    }
+
+    function exibirResultado(res) {
+      linhaAtual = res.linha;
+      document.getElementById("pNome").innerText = res.nome;
+      document.getElementById("pId").innerText = res.id;
+      document.getElementById("pCamiseta").innerText = res.camiseta === "SIM" ? "SIM (" + res.tamanho + ")" : "NÃO";
+      
+      if (res.restricao && res.restricao.toLowerCase() !== "nenhuma" && res.restricao.trim() !== "") {
+        document.getElementById("pRestricao").innerText = res.restricao;
+        document.getElementById("pRestricaoBox").style.display = "block";
+      } else {
+        document.getElementById("pRestricaoBox").style.display = "none";
+      }
+      
+      document.getElementById("resultado").style.display = "block";
+    }
+
+    function confirmarEntrada() {
+      if (!linhaAtual) return;
+      
+      const btn = document.getElementById("btnConfirmar");
+      btn.innerText = "Registrando...";
+      btn.disabled = true;
+
+      fetch(`${APPS_SCRIPT_URL}?acao=checkin&linha=${linhaAtual}`)
+        .then(response => response.json())
+        .then(res => {
+          alert(res.mensagem);
+          document.getElementById("resultado").style.display = "none";
+          btn.innerText = "Confirmar Entrada";
+          btn.disabled = false;
+          lendo = true; // Libera o leitor para o próximo participante
+        })
+        .catch(err => {
+          alert("Erro ao salvar check-in.");
+          btn.innerText = "Confirmar Entrada";
+          btn.disabled = false;
+        });
+    }
+
+    // Inicialização do leitor de QR Code usando câmera traseira por padrão
+    let html5QrcodeScanner = new Html5QrcodeScanner(
+      "reader", 
+      { 
+        fps: 15, 
+        qrbox: { width: 220, height: 220 },
+        facingMode: "environment"
+      }, 
+      /* verbose= */ false
+    );
+    html5QrcodeScanner.render(onScanSuccess);
+  </script>
+</body>
+</html>
