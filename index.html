@@ -123,7 +123,7 @@
       elInfo.innerText = "⏳ Baixando dados da planilha...";
 
       try {
-        const response = await fetch(`${APPS_SCRIPT_URL}?acao=listar`);
+        const response = await fetch(APPS_SCRIPT_URL);
         const dados = await response.json();
 
         if (Array.isArray(dados)) {
