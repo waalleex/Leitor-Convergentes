@@ -118,40 +118,33 @@
     };
 
     // Função para baixar os dados da planilha quando houver internet
-    async function sincronizarPlanilha() {
-      const elInfo = document.getElementById("infoSync");
-      elInfo.innerText = "⏳ Baixando dados da planilha...";
+   async function sincronizarPlanilha() {
+  const elInfo = document.getElementById("infoSync");
+  elInfo.innerText = "⏳ Baixando dados da planilha...";
 
-      try {
-        const response = await fetch(APPS_SCRIPT_URL);
-        const dados = await response.json();
+  try {
+    // Adicionado redirect: 'follow' para aceitar o redirecionamento do Google
+    const response = await fetch(APPS_SCRIPT_URL, { redirect: 'follow' });
+    const dados = await response.json();
 
-        if (Array.isArray(dados)) {
-          const tx = db.transaction("participantes", "readwrite");
-          const store = tx.objectStore("participantes");
-          store.clear(); // Limpa dados antigos
+    if (Array.isArray(dados)) {
+      const tx = db.transaction("participantes", "readwrite");
+      const store = tx.objectStore("participantes");
+      store.clear(); // Limpa dados antigos
 
-          dados.forEach(item => store.put(item));
+      dados.forEach(item => store.put(item));
 
-          tx.oncomplete = () => {
-            elInfo.innerText = `✅ Sincronizado! ${dados.length} inscritos prontos offline.`;
-            alert(`Sincronização concluída! ${dados.length} participantes baixados para o celular.`);
-          };
-        } else {
-          alert("Erro ao receber lista de participantes.");
-        }
-      } catch (err) {
-        alert("Erro ao sincronizar. Verifique se você está conectado à internet.");
-        elInfo.innerText = "⚠️ Falha ao sincronizar.";
-      }
+      tx.oncomplete = () => {
+        elInfo.innerText = `✅ Sincronizado! ${dados.length} inscritos prontos offline.`;
+        alert(`Sincronização concluída! ${dados.length} participantes baixados para o celular.`);
+      };
+    } else {
+      alert("Erro no formato da resposta da planilha.");
     }
-
-    function onScanSuccess(decodedText) {
-      if (!lendo) return;
-      lendo = false;
-
-      buscarParticipanteOffline(decodedText.trim());
-    }
+  } catch (err) {
+    alert("Erro de conexão ao sincronizar. Verifique se publicou como 'Qualquer Pessoa' no Apps Script.");
+    elInfo.innerText = "⚠️ Falha ao sincronizar.";
+  }
 
     // Busca o QR Code direto no banco salvo no celular (Sem gastar internet)
     function buscarParticipanteOffline(id) {
