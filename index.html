@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Check-in - Comunidade Conexão (Offline)</title>
   
-  <!-- Biblioteca Html5-QRCode -->
+  <!-- Biblioteca Html5-QRCode otimizada -->
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
   
   <style>
@@ -28,6 +28,7 @@
       border-radius: 12px;
       overflow: hidden;
       box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      min-height: 250px;
     }
     
     #resultado {
@@ -78,9 +79,8 @@
   <h2>Check-in Conexão</h2>
   <p>Aproxime o QR Code do participante da câmera</p>
 
-  <!-- Botão para carregar dados da planilha para o celular -->
   <button class="btn btn-sync" onclick="sincronizarPlanilha()">🔄 Sincronizar Dados (Usar c/ Internet)</button>
-  <div id="infoSync" class="info-sync">Banco de dados não carregado.</div>
+  <div id="infoSync" class="info-sync">Iniciando banco de dados local...</div>
   
   <div id="reader"></div>
 
@@ -102,52 +102,80 @@
 
     let lendo = true;
     let participanteAtual = null;
-    let db;
+    let db = null;
 
-    // Inicializa o banco de dados interno do navegador (IndexedDB)
-    const request = indexedDB.open("CheckinConexaoDB", 1);
-    request.onupgradeneeded = (e) => {
-      db = e.target.result;
-      if (!db.objectStoreNames.contains("participantes")) {
-        db.createObjectStore("participantes", { keyPath: "id" });
-      }
-    };
-    request.onsuccess = (e) => {
-      db = e.target.result;
-      atualizarContadorLocal();
-    };
+    // Inicialização segura do IndexedDB
+    function abrirBanco() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open("CheckinConexaoDB", 1);
+        
+        request.onupgradeneeded = (e) => {
+          const database = e.target.result;
+          if (!database.objectStoreNames.contains("participantes")) {
+            database.createObjectStore("participantes", { keyPath: "id" });
+          }
+        };
 
-    // Função para baixar os dados da planilha quando houver internet
-   async function sincronizarPlanilha() {
-  const elInfo = document.getElementById("infoSync");
-  elInfo.innerText = "⏳ Baixando dados da planilha...";
+        request.onsuccess = (e) => {
+          db = e.target.result;
+          atualizarContadorLocal();
+          resolve(db);
+        };
 
-  try {
-    // Adicionado redirect: 'follow' para aceitar o redirecionamento do Google
-    const response = await fetch(APPS_SCRIPT_URL, { redirect: 'follow' });
-    const dados = await response.json();
-
-    if (Array.isArray(dados)) {
-      const tx = db.transaction("participantes", "readwrite");
-      const store = tx.objectStore("participantes");
-      store.clear(); // Limpa dados antigos
-
-      dados.forEach(item => store.put(item));
-
-      tx.oncomplete = () => {
-        elInfo.innerText = `✅ Sincronizado! ${dados.length} inscritos prontos offline.`;
-        alert(`Sincronização concluída! ${dados.length} participantes baixados para o celular.`);
-      };
-    } else {
-      alert("Erro no formato da resposta da planilha.");
+        request.onerror = (e) => {
+          document.getElementById("infoSync").innerText = "⚠️ Erro ao abrir banco local.";
+          reject(e);
+        };
+      });
     }
-  } catch (err) {
-    alert("Erro de conexão ao sincronizar. Verifique se publicou como 'Qualquer Pessoa' no Apps Script.");
-    elInfo.innerText = "⚠️ Falha ao sincronizar.";
-  }
 
-    // Busca o QR Code direto no banco salvo no celular (Sem gastar internet)
+    // Carrega o banco de dados na inicialização
+    abrirBanco();
+
+    async function sincronizarPlanilha() {
+      const elInfo = document.getElementById("infoSync");
+      elInfo.innerText = "⏳ Baixando dados da planilha...";
+
+      try {
+        if (!db) await abrirBanco();
+
+        const response = await fetch(APPS_SCRIPT_URL, { redirect: 'follow' });
+        const dados = await response.json();
+
+        if (Array.isArray(dados)) {
+          const tx = db.transaction("participantes", "readwrite");
+          const store = tx.objectStore("participantes");
+          store.clear();
+
+          dados.forEach(item => store.put(item));
+
+          tx.oncomplete = () => {
+            elInfo.innerText = `✅ Sincronizado! ${dados.length} inscritos prontos offline.`;
+            alert(`Sincronização concluída! ${dados.length} participantes salvos no celular.`);
+          };
+        } else {
+          alert("Erro no formato dos dados retornados.");
+          elInfo.innerText = "⚠️ Falha no formato da lista.";
+        }
+      } catch (err) {
+        alert("Erro ao conectar à planilha. Verifique a conexão com a internet.");
+        elInfo.innerText = "⚠️ Falha na sincronização.";
+      }
+    }
+
+    function onScanSuccess(decodedText) {
+      if (!lendo) return;
+      lendo = false;
+      buscarParticipanteOffline(decodedText.trim());
+    }
+
     function buscarParticipanteOffline(id) {
+      if (!db) {
+        alert("Banco de dados não pronto. Tente novamente.");
+        lendo = true;
+        return;
+      }
+
       const tx = db.transaction("participantes", "readonly");
       const store = tx.objectStore("participantes");
       const req = store.get(id);
@@ -159,6 +187,11 @@
           alert("❌ QR Code / ID não encontrado na lista baixada!");
           lendo = true;
         }
+      };
+
+      req.onerror = () => {
+        alert("Erro ao buscar no banco local.");
+        lendo = true;
       };
     }
 
@@ -185,12 +218,12 @@
     function confirmarEntrada() {
       if (!participanteAtual) return;
       alert(`✅ Entrada de ${participanteAtual.nome} confirmada!`);
-      
       document.getElementById("resultado").style.display = "none";
       lendo = true;
     }
 
     function atualizarContadorLocal() {
+      if (!db) return;
       const tx = db.transaction("participantes", "readonly");
       const store = tx.objectStore("participantes");
       const req = store.count();
@@ -199,17 +232,23 @@
       };
     }
 
-    // Inicializador da Câmera
-    let html5QrcodeScanner = new Html5QrcodeScanner(
-      "reader", 
-      { 
-        fps: 15, 
-        qrbox: { width: 220, height: 220 },
-        facingMode: "environment"
-      }, 
-      false
-    );
-    html5QrcodeScanner.render(onScanSuccess);
+    // Inicializador seguro da Câmera
+    window.addEventListener("load", () => {
+      try {
+        let html5QrcodeScanner = new Html5QrcodeScanner(
+          "reader", 
+          { 
+            fps: 10, 
+            qrbox: { width: 220, height: 220 },
+            facingMode: "environment"
+          }, 
+          false
+        );
+        html5QrcodeScanner.render(onScanSuccess);
+      } catch (e) {
+        console.error("Erro ao iniciar leitor de QR Code:", e);
+      }
+    });
   </script>
 </body>
 </html>
