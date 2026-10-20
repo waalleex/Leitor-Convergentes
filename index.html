@@ -42,6 +42,32 @@
       text-align: left;
       box-shadow: 0 4px 10px rgba(0,0,0,0.3);
     }
+
+    /* Destaques para Nome e Camiseta */
+    .nome-destaque {
+      font-size: 24px;
+      font-weight: 800;
+      color: #1F2A24;
+      text-transform: uppercase;
+      margin: 0 0 10px 0;
+      border-bottom: 3px solid #C8A15A;
+      padding-bottom: 6px;
+      line-height: 1.2;
+    }
+
+    .box-camiseta-destaque {
+      background-color: #1F2A24;
+      color: #FFFFFF;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin: 12px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .box-camiseta-destaque .label-cam { font-size: 14px; color: #DECAA5; font-weight: 600; }
+    .box-camiseta-destaque .valor-cam { font-size: 20px; font-weight: bold; color: #C8A15A; }
+
     .alerta {
       background: #FFF3CD;
       color: #856404;
@@ -63,23 +89,9 @@
       cursor: pointer;
       margin-top: 10px;
     }
-    .btn-sync {
-      background: #C8A15A;
-      color: #1F2A24;
-      margin-bottom: 5px;
-    }
-    .btn-upload {
-      background: #28a745;
-      color: #ffffff;
-      margin-bottom: 10px;
-    }
-    .btn-cancelar {
-      background: #6c757d;
-      color: #ffffff;
-      font-size: 14px;
-      padding: 10px;
-      margin-top: 8px;
-    }
+    .btn-sync { background: #C8A15A; color: #1F2A24; margin-bottom: 5px; }
+    .btn-upload { background: #28a745; color: #ffffff; margin-bottom: 10px; }
+    .btn-cancelar { background: #6c757d; color: #ffffff; font-size: 14px; padding: 10px; margin-top: 8px; }
     .btn-cancelar:active { background: #5a6268; }
     .btn:active { background: #1F2A24; }
     
@@ -113,9 +125,14 @@
   <div id="reader"></div>
 
   <div id="resultado">
-    <h3 id="pNome" style="margin:0 0 10px 0; color:#1F2A24; border-bottom: 2px solid #C8A15A; padding-bottom: 5px;"></h3>
+    <div id="pNome" class="nome-destaque"></div>
+
+    <div class="box-camiseta-destaque">
+      <span class="label-cam">👕 CAMISETA:</span>
+      <span id="pCamiseta" class="valor-cam"></span>
+    </div>
+
     <p style="color:#1F2A24; margin: 5px 0;"><b>ID:</b> <span id="pId"></span></p>
-    <p style="color:#1F2A24; margin: 5px 0;"><b>Camiseta:</b> <span id="pCamiseta"></span></p>
     <p style="color:#1F2A24; margin: 5px 0;"><b>Status Pgto:</b> <span id="pStatusPgto"></span></p>
     <p style="color:#1F2A24; margin: 5px 0;"><b>Check-in:</b> <span id="pStatusCheckin"></span></p>
     
@@ -140,7 +157,7 @@
 
     function abrirBanco() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open("CheckinConexaoDB", 2);
+        const request = indexedDB.open("CheckinConexaoDB", 3);
         
         request.onupgradeneeded = (e) => {
           const database = e.target.result;
@@ -164,7 +181,7 @@
 
     abrirBanco();
 
-    // 1. BAIXAR DADOS DA PLANILHA PARA O CELULAR
+    // 1. BAIXAR DADOS DA PLANILHA
     async function sincronizarPlanilha() {
       const elInfo = document.getElementById("infoSync");
       elInfo.innerText = "⏳ Baixando dados da planilha...";
@@ -179,12 +196,12 @@
           const tx = db.transaction("participantes", "readwrite");
           const store = tx.objectStore("participantes");
 
-          // Mantém os check-ins locais que ainda não foram enviados online
           dados.forEach(item => {
             store.get(item.id).onsuccess = (e) => {
               const localItem = e.target.result;
               if (localItem && localItem.checkin) {
                 item.checkin = true;
+                item.dataHoraCheckin = localItem.dataHoraCheckin;
                 item.sincronizado = localItem.sincronizado;
               } else {
                 if (item.checkin === undefined) item.checkin = false;
@@ -208,7 +225,7 @@
       }
     }
 
-    // 2. ENVIAR CHECK-INS FEITOS OFFLINE DE VOLTA PARA A PLANILHA
+    // 2. ENVIAR CHECK-INS COM DATA/HORA PARA A PLANILHA
     async function enviarCheckinsOnline() {
       const elInfo = document.getElementById("infoSync");
       elInfo.innerText = "⏳ Enviando check-ins para a planilha...";
@@ -221,7 +238,6 @@
 
       req.onsuccess = async () => {
         const todos = req.result;
-        // Filtra apenas quem fez check-in local e ainda não subiu para a planilha
         const pendentes = todos.filter(p => p.checkin === true && p.sincronizado === false);
 
         if (pendentes.length === 0) {
@@ -230,19 +246,21 @@
           return;
         }
 
-        const idsParaEnviar = pendentes.map(p => p.id);
+        const registrosParaEnviar = pendentes.map(p => ({
+          id: p.id,
+          dataHora: p.dataHoraCheckin || new Date().toLocaleString("pt-BR")
+        }));
 
         try {
           const response = await fetch(APPS_SCRIPT_URL, {
             method: "POST",
-            body: JSON.stringify({ ids: idsParaEnviar }),
+            body: JSON.stringify({ registros: registrosParaEnviar }),
             headers: { "Content-Type": "text/plain;charset=utf-8" }
           });
 
           const res = await response.json();
 
           if (res.sucesso) {
-            // Marca no celular que esses itens já foram sincronizados com a planilha
             const txWrite = db.transaction("participantes", "readwrite");
             const storeWrite = txWrite.objectStore("participantes");
 
@@ -300,7 +318,14 @@
       participanteAtual = p;
       document.getElementById("pNome").innerText = p.nome;
       document.getElementById("pId").innerText = p.id;
-      document.getElementById("pCamiseta").innerText = p.camiseta === "SIM" ? "SIM (" + p.tamanho + ")" : "NÃO";
+
+      // Formatação destacada para Camiseta e Tamanho
+      const elCamiseta = document.getElementById("pCamiseta");
+      if (p.camiseta === "SIM") {
+        elCamiseta.innerText = `SIM - TAM: ${p.tamanho}`;
+      } else {
+        elCamiseta.innerText = "NÃO POSSUI";
+      }
       
       const elPgto = document.getElementById("pStatusPgto");
       elPgto.innerText = p.statusPgto;
@@ -311,7 +336,9 @@
       const boxJaChecado = document.getElementById("boxJaChecado");
 
       if (p.checkin === true) {
-        elCheckin.innerText = "CHECADO";
+        let textoCheckin = "CHECADO";
+        if (p.dataHoraCheckin) textoCheckin += ` (${p.dataHoraCheckin})`;
+        elCheckin.innerText = textoCheckin;
         elCheckin.className = "status-checkin";
         btnConfirmar.style.display = "none";
         boxJaChecado.style.display = "block";
@@ -335,8 +362,12 @@
     function confirmarEntrada() {
       if (!participanteAtual) return;
 
-      // Marca como checado localmente e registra pendência de envio online
+      const agora = new Date();
+      const dataHoraFormatada = agora.toLocaleDateString("pt-BR") + " " + agora.toLocaleTimeString("pt-BR");
+
+      // Salva a entrada com o carimbo de data/hora local
       participanteAtual.checkin = true;
+      participanteAtual.dataHoraCheckin = dataHoraFormatada;
       participanteAtual.sincronizado = false;
 
       const tx = db.transaction("participantes", "readwrite");
