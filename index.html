@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Check-in - Comunidade Conexão</title>
+  <title>Check-in - Comunidade Conexão (Offline)</title>
   
-  <!-- Biblioteca Html5-QRCode otimizada -->
+  <!-- Biblioteca Html5-QRCode -->
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
   
   <style>
@@ -62,22 +62,33 @@
       cursor: pointer;
       margin-top: 10px;
     }
+    .btn-sync {
+      background: #C8A15A;
+      color: #1F2A24;
+      margin-bottom: 10px;
+    }
     .btn:active { background: #1F2A24; }
-    .status-loading { color: #C8A15A; font-weight: bold; display: none; margin-top: 10px; }
+    .status-ok { color: #28a745; font-weight: bold; }
+    .status-pendente { color: #dc3545; font-weight: bold; }
+    .info-sync { font-size: 12px; color: #DECAA5; margin-bottom: 15px; }
   </style>
 </head>
 <body>
 
   <h2>Check-in Conexão</h2>
   <p>Aproxime o QR Code do participante da câmera</p>
+
+  <!-- Botão para carregar dados da planilha para o celular -->
+  <button class="btn btn-sync" onclick="sincronizarPlanilha()">🔄 Sincronizar Dados (Usar c/ Internet)</button>
+  <div id="infoSync" class="info-sync">Banco de dados não carregado.</div>
   
   <div id="reader"></div>
-  <div id="loading" class="status-loading">⏳ Buscando dados na planilha...</div>
 
   <div id="resultado">
     <h3 id="pNome" style="margin:0 0 10px 0; color:#1F2A24; border-bottom: 2px solid #C8A15A; padding-bottom: 5px;"></h3>
     <p style="color:#1F2A24; margin: 5px 0;"><b>ID:</b> <span id="pId"></span></p>
     <p style="color:#1F2A24; margin: 5px 0;"><b>Camiseta:</b> <span id="pCamiseta"></span></p>
+    <p style="color:#1F2A24; margin: 5px 0;"><b>Status Pgto:</b> <span id="pStatusPgto"></span></p>
     
     <div id="pRestricaoBox" class="alerta" style="display:none;">
       ⚠️ <b>Restrição Alimentar:</b> <span id="pRestricao"></span>
@@ -87,76 +98,115 @@
   </div>
 
   <script>
-    // Cole aqui o URL do App da Web gerado na implantação do Apps Script
     const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbymAbRLeb-ZvDXYdYievSXErp3QZzPXXhQJeWU45mI1CvHAgnKraMoe2133eWVo_zE/exec"; 
 
-    let linhaAtual = null;
     let lendo = true;
+    let participanteAtual = null;
+    let db;
+
+    // Inicializa o banco de dados interno do navegador (IndexedDB)
+    const request = indexedDB.open("CheckinConexaoDB", 1);
+    request.onupgradeneeded = (e) => {
+      db = e.target.result;
+      if (!db.objectStoreNames.contains("participantes")) {
+        db.createObjectStore("participantes", { keyPath: "id" });
+      }
+    };
+    request.onsuccess = (e) => {
+      db = e.target.result;
+      atualizarContadorLocal();
+    };
+
+    // Função para baixar os dados da planilha quando houver internet
+    async function sincronizarPlanilha() {
+      const elInfo = document.getElementById("infoSync");
+      elInfo.innerText = "⏳ Baixando dados da planilha...";
+
+      try {
+        const response = await fetch(`${APPS_SCRIPT_URL}?acao=listar`);
+        const dados = await response.json();
+
+        if (Array.isArray(dados)) {
+          const tx = db.transaction("participantes", "readwrite");
+          const store = tx.objectStore("participantes");
+          store.clear(); // Limpa dados antigos
+
+          dados.forEach(item => store.put(item));
+
+          tx.oncomplete = () => {
+            elInfo.innerText = `✅ Sincronizado! ${dados.length} inscritos prontos offline.`;
+            alert(`Sincronização concluída! ${dados.length} participantes baixados para o celular.`);
+          };
+        } else {
+          alert("Erro ao receber lista de participantes.");
+        }
+      } catch (err) {
+        alert("Erro ao sincronizar. Verifique se você está conectado à internet.");
+        elInfo.innerText = "⚠️ Falha ao sincronizar.";
+      }
+    }
 
     function onScanSuccess(decodedText) {
       if (!lendo) return;
-      lendo = false; // Pausa novas leituras enquanto processa
+      lendo = false;
 
-      document.getElementById("loading").style.display = "block";
-      
-      fetch(`${APPS_SCRIPT_URL}?acao=buscar&id=${encodeURIComponent(decodedText)}`)
-        .then(response => response.json())
-        .then(res => {
-          document.getElementById("loading").style.display = "none";
-          if (res.sucesso) {
-            exibirResultado(res);
-          } else {
-            alert(res.mensagem);
-            lendo = true; // Retoma leitura caso não ache
-          }
-        })
-        .catch(err => {
-          document.getElementById("loading").style.display = "none";
-          alert("Erro ao conectar à planilha. Verifique a conexão.");
-          lendo = true;
-        });
+      buscarParticipanteOffline(decodedText.trim());
     }
 
-    function exibirResultado(res) {
-      linhaAtual = res.linha;
-      document.getElementById("pNome").innerText = res.nome;
-      document.getElementById("pId").innerText = res.id;
-      document.getElementById("pCamiseta").innerText = res.camiseta === "SIM" ? "SIM (" + res.tamanho + ")" : "NÃO";
+    // Busca o QR Code direto no banco salvo no celular (Sem gastar internet)
+    function buscarParticipanteOffline(id) {
+      const tx = db.transaction("participantes", "readonly");
+      const store = tx.objectStore("participantes");
+      const req = store.get(id);
+
+      req.onsuccess = () => {
+        if (req.result) {
+          exibirResultado(req.result);
+        } else {
+          alert("❌ QR Code / ID não encontrado na lista baixada!");
+          lendo = true;
+        }
+      };
+    }
+
+    function exibirResultado(p) {
+      participanteAtual = p;
+      document.getElementById("pNome").innerText = p.nome;
+      document.getElementById("pId").innerText = p.id;
+      document.getElementById("pCamiseta").innerText = p.camiseta === "SIM" ? "SIM (" + p.tamanho + ")" : "NÃO";
       
-      if (res.restricao && res.restricao.toLowerCase() !== "nenhuma" && res.restricao.trim() !== "") {
-        document.getElementById("pRestricao").innerText = res.restricao;
+      const elPgto = document.getElementById("pStatusPgto");
+      elPgto.innerText = p.statusPgto;
+      elPgto.className = (p.statusPgto === "100,0%" || p.statusPgto === "100.0%") ? "status-ok" : "status-pendente";
+
+      if (p.restricao && p.restricao.toLowerCase() !== "nenhuma" && p.restricao.trim() !== "") {
+        document.getElementById("pRestricao").innerText = p.restricao;
         document.getElementById("pRestricaoBox").style.display = "block";
       } else {
         document.getElementById("pRestricaoBox").style.display = "none";
       }
-      
+
       document.getElementById("resultado").style.display = "block";
     }
 
     function confirmarEntrada() {
-      if (!linhaAtual) return;
+      if (!participanteAtual) return;
+      alert(`✅ Entrada de ${participanteAtual.nome} confirmada!`);
       
-      const btn = document.getElementById("btnConfirmar");
-      btn.innerText = "Registrando...";
-      btn.disabled = true;
-
-      fetch(`${APPS_SCRIPT_URL}?acao=checkin&linha=${linhaAtual}`)
-        .then(response => response.json())
-        .then(res => {
-          alert(res.mensagem);
-          document.getElementById("resultado").style.display = "none";
-          btn.innerText = "Confirmar Entrada";
-          btn.disabled = false;
-          lendo = true; // Libera o leitor para o próximo participante
-        })
-        .catch(err => {
-          alert("Erro ao salvar check-in.");
-          btn.innerText = "Confirmar Entrada";
-          btn.disabled = false;
-        });
+      document.getElementById("resultado").style.display = "none";
+      lendo = true;
     }
 
-    // Inicialização do leitor de QR Code usando câmera traseira por padrão
+    function atualizarContadorLocal() {
+      const tx = db.transaction("participantes", "readonly");
+      const store = tx.objectStore("participantes");
+      const req = store.count();
+      req.onsuccess = () => {
+        document.getElementById("infoSync").innerText = `📱 Banco offline: ${req.result} inscritos carregados.`;
+      };
+    }
+
+    // Inicializador da Câmera
     let html5QrcodeScanner = new Html5QrcodeScanner(
       "reader", 
       { 
@@ -164,7 +214,7 @@
         qrbox: { width: 220, height: 220 },
         facingMode: "environment"
       }, 
-      /* verbose= */ false
+      false
     );
     html5QrcodeScanner.render(onScanSuccess);
   </script>
