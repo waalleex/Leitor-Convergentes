@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Check-in - Comunidade Conexão (Offline)</title>
   
-  <!-- Biblioteca Html5-QRCode otimizada -->
+  <!-- Biblioteca Html5-QRCode -->
   <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
   
   <style>
@@ -66,12 +66,38 @@
     .btn-sync {
       background: #C8A15A;
       color: #1F2A24;
+      margin-bottom: 5px;
+    }
+    .btn-upload {
+      background: #28a745;
+      color: #ffffff;
       margin-bottom: 10px;
     }
+    .btn-cancelar {
+      background: #6c757d;
+      color: #ffffff;
+      font-size: 14px;
+      padding: 10px;
+      margin-top: 8px;
+    }
+    .btn-cancelar:active { background: #5a6268; }
     .btn:active { background: #1F2A24; }
+    
     .status-ok { color: #28a745; font-weight: bold; }
     .status-pendente { color: #dc3545; font-weight: bold; }
+    .status-checkin { color: #17a2b8; font-weight: bold; }
     .info-sync { font-size: 12px; color: #DECAA5; margin-bottom: 15px; }
+    
+    .badge-checkin {
+      background: #d1ecf1;
+      color: #0c5460;
+      padding: 8px;
+      border-radius: 6px;
+      font-weight: bold;
+      text-align: center;
+      margin: 10px 0;
+      border: 1px solid #bee5eb;
+    }
   </style>
 </head>
 <body>
@@ -79,7 +105,9 @@
   <h2>Check-in Conexão</h2>
   <p>Aproxime o QR Code do participante da câmera</p>
 
-  <button class="btn btn-sync" onclick="sincronizarPlanilha()">🔄 Sincronizar Dados (Usar c/ Internet)</button>
+  <button class="btn btn-sync" onclick="sincronizarPlanilha()">🔄 Baixar Dados da Planilha</button>
+  <button class="btn btn-upload" onclick="enviarCheckinsOnline()">📤 Enviar Check-ins p/ Planilha</button>
+  
   <div id="infoSync" class="info-sync">Iniciando banco de dados local...</div>
   
   <div id="reader"></div>
@@ -89,25 +117,30 @@
     <p style="color:#1F2A24; margin: 5px 0;"><b>ID:</b> <span id="pId"></span></p>
     <p style="color:#1F2A24; margin: 5px 0;"><b>Camiseta:</b> <span id="pCamiseta"></span></p>
     <p style="color:#1F2A24; margin: 5px 0;"><b>Status Pgto:</b> <span id="pStatusPgto"></span></p>
+    <p style="color:#1F2A24; margin: 5px 0;"><b>Check-in:</b> <span id="pStatusCheckin"></span></p>
     
     <div id="pRestricaoBox" class="alerta" style="display:none;">
       ⚠️ <b>Restrição Alimentar:</b> <span id="pRestricao"></span>
     </div>
 
+    <div id="boxJaChecado" class="badge-checkin" style="display:none;">
+      ✅ Participante já realizou check-in!
+    </div>
+
     <button id="btnConfirmar" class="btn" onclick="confirmarEntrada()">Confirmar Entrada</button>
+    <button id="btnCancelar" class="btn btn-cancelar" onclick="fecharResultado()">Voltar / Cancelar</button>
   </div>
 
   <script>
     const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbymAbRLeb-ZvDXYdYievSXErp3QZzPXXhQJeWU45mI1CvHAgnKraMoe2133eWVo_zE/exec"; 
 
-    let lendo = true;
     let participanteAtual = null;
     let db = null;
+    let html5QrcodeScanner = null;
 
-    // Inicialização segura do IndexedDB
     function abrirBanco() {
       return new Promise((resolve, reject) => {
-        const request = indexedDB.open("CheckinConexaoDB", 1);
+        const request = indexedDB.open("CheckinConexaoDB", 2);
         
         request.onupgradeneeded = (e) => {
           const database = e.target.result;
@@ -129,9 +162,9 @@
       });
     }
 
-    // Carrega o banco de dados na inicialização
     abrirBanco();
 
+    // 1. BAIXAR DADOS DA PLANILHA PARA O CELULAR
     async function sincronizarPlanilha() {
       const elInfo = document.getElementById("infoSync");
       elInfo.innerText = "⏳ Baixando dados da planilha...";
@@ -145,13 +178,25 @@
         if (Array.isArray(dados)) {
           const tx = db.transaction("participantes", "readwrite");
           const store = tx.objectStore("participantes");
-          store.clear();
 
-          dados.forEach(item => store.put(item));
+          // Mantém os check-ins locais que ainda não foram enviados online
+          dados.forEach(item => {
+            store.get(item.id).onsuccess = (e) => {
+              const localItem = e.target.result;
+              if (localItem && localItem.checkin) {
+                item.checkin = true;
+                item.sincronizado = localItem.sincronizado;
+              } else {
+                if (item.checkin === undefined) item.checkin = false;
+                item.sincronizado = true;
+              }
+              store.put(item);
+            };
+          });
 
           tx.oncomplete = () => {
-            elInfo.innerText = `✅ Sincronizado! ${dados.length} inscritos prontos offline.`;
-            alert(`Sincronização concluída! ${dados.length} participantes salvos no celular.`);
+            atualizarContadorLocal();
+            alert(`Sincronização concluída! ${dados.length} inscritos carregados.`);
           };
         } else {
           alert("Erro no formato dos dados retornados.");
@@ -163,16 +208,72 @@
       }
     }
 
+    // 2. ENVIAR CHECK-INS FEITOS OFFLINE DE VOLTA PARA A PLANILHA
+    async function enviarCheckinsOnline() {
+      const elInfo = document.getElementById("infoSync");
+      elInfo.innerText = "⏳ Enviando check-ins para a planilha...";
+
+      if (!db) await abrirBanco();
+
+      const tx = db.transaction("participantes", "readonly");
+      const store = tx.objectStore("participantes");
+      const req = store.getAll();
+
+      req.onsuccess = async () => {
+        const todos = req.result;
+        // Filtra apenas quem fez check-in local e ainda não subiu para a planilha
+        const pendentes = todos.filter(p => p.checkin === true && p.sincronizado === false);
+
+        if (pendentes.length === 0) {
+          alert("Nenhum check-in novo pendente para enviar!");
+          atualizarContadorLocal();
+          return;
+        }
+
+        const idsParaEnviar = pendentes.map(p => p.id);
+
+        try {
+          const response = await fetch(APPS_SCRIPT_URL, {
+            method: "POST",
+            body: JSON.stringify({ ids: idsParaEnviar }),
+            headers: { "Content-Type": "text/plain;charset=utf-8" }
+          });
+
+          const res = await response.json();
+
+          if (res.sucesso) {
+            // Marca no celular que esses itens já foram sincronizados com a planilha
+            const txWrite = db.transaction("participantes", "readwrite");
+            const storeWrite = txWrite.objectStore("participantes");
+
+            pendentes.forEach(p => {
+              p.sincronizado = true;
+              storeWrite.put(p);
+            });
+
+            txWrite.oncomplete = () => {
+              alert(`✅ Sucesso! ${res.processados} check-in(s) salvos na planilha online.`);
+              atualizarContadorLocal();
+            };
+          } else {
+            alert("Erro do servidor ao salvar check-ins.");
+          }
+        } catch (err) {
+          alert("Erro de conexão ao enviar. Tente novamente quando tiver internet.");
+          elInfo.innerText = "⚠️ Erro ao enviar dados.";
+        }
+      };
+    }
+
     function onScanSuccess(decodedText) {
-      if (!lendo) return;
-      lendo = false;
+      pausarCamera();
       buscarParticipanteOffline(decodedText.trim());
     }
 
     function buscarParticipanteOffline(id) {
       if (!db) {
         alert("Banco de dados não pronto. Tente novamente.");
-        lendo = true;
+        retomarCamera();
         return;
       }
 
@@ -185,13 +286,13 @@
           exibirResultado(req.result);
         } else {
           alert("❌ QR Code / ID não encontrado na lista baixada!");
-          lendo = true;
+          retomarCamera();
         }
       };
 
       req.onerror = () => {
         alert("Erro ao buscar no banco local.");
-        lendo = true;
+        retomarCamera();
       };
     }
 
@@ -205,6 +306,22 @@
       elPgto.innerText = p.statusPgto;
       elPgto.className = (p.statusPgto === "100,0%" || p.statusPgto === "100.0%") ? "status-ok" : "status-pendente";
 
+      const elCheckin = document.getElementById("pStatusCheckin");
+      const btnConfirmar = document.getElementById("btnConfirmar");
+      const boxJaChecado = document.getElementById("boxJaChecado");
+
+      if (p.checkin === true) {
+        elCheckin.innerText = "CHECADO";
+        elCheckin.className = "status-checkin";
+        btnConfirmar.style.display = "none";
+        boxJaChecado.style.display = "block";
+      } else {
+        elCheckin.innerText = "PENDENTE";
+        elCheckin.className = "status-pendente";
+        btnConfirmar.style.display = "block";
+        boxJaChecado.style.display = "none";
+      }
+
       if (p.restricao && p.restricao.toLowerCase() !== "nenhuma" && p.restricao.trim() !== "") {
         document.getElementById("pRestricao").innerText = p.restricao;
         document.getElementById("pRestricaoBox").style.display = "block";
@@ -217,25 +334,43 @@
 
     function confirmarEntrada() {
       if (!participanteAtual) return;
-      alert(`✅ Entrada de ${participanteAtual.nome} confirmada!`);
+
+      // Marca como checado localmente e registra pendência de envio online
+      participanteAtual.checkin = true;
+      participanteAtual.sincronizado = false;
+
+      const tx = db.transaction("participantes", "readwrite");
+      const store = tx.objectStore("participantes");
+      store.put(participanteAtual);
+
+      tx.oncomplete = () => {
+        atualizarContadorLocal();
+        fecharResultado();
+      };
+    }
+
+    function fecharResultado() {
       document.getElementById("resultado").style.display = "none";
-      lendo = true;
+      participanteAtual = null;
+      retomarCamera();
     }
 
     function atualizarContadorLocal() {
       if (!db) return;
       const tx = db.transaction("participantes", "readonly");
       const store = tx.objectStore("participantes");
-      const req = store.count();
+      const req = store.getAll();
+
       req.onsuccess = () => {
-        document.getElementById("infoSync").innerText = `📱 Banco offline: ${req.result} inscritos carregados.`;
+        const todos = req.result;
+        const pendentes = todos.filter(p => p.checkin === true && p.sincronizado === false).length;
+        document.getElementById("infoSync").innerText = `📱 Inscritos: ${todos.length} | 📤 Check-ins p/ enviar: ${pendentes}`;
       };
     }
 
-    // Inicializador seguro da Câmera
-    window.addEventListener("load", () => {
-      try {
-        let html5QrcodeScanner = new Html5QrcodeScanner(
+    function iniciarCamera() {
+      if (!html5QrcodeScanner) {
+        html5QrcodeScanner = new Html5QrcodeScanner(
           "reader", 
           { 
             fps: 10, 
@@ -244,10 +379,22 @@
           }, 
           false
         );
-        html5QrcodeScanner.render(onScanSuccess);
-      } catch (e) {
-        console.error("Erro ao iniciar leitor de QR Code:", e);
       }
+      html5QrcodeScanner.render(onScanSuccess);
+    }
+
+    function pausarCamera() {
+      if (html5QrcodeScanner) {
+        html5QrcodeScanner.clear();
+      }
+    }
+
+    function retomarCamera() {
+      iniciarCamera();
+    }
+
+    window.addEventListener("load", () => {
+      iniciarCamera();
     });
   </script>
 </body>
